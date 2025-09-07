@@ -1,0 +1,11 @@
+# used to create the object
+defaults:
+  - KinovaFetch
+  - _self_
+
+# if given, will override the device setting in gym.
+sub_task: "push"
+
+env:
+  episodeLength: 500
+  random_reset: True

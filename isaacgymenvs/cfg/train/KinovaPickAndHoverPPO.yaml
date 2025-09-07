@@ -1,0 +1,10 @@
+defaults:
+  - KinovaFetchPPO
+  - _self_
+
+params:
+  config:
+    name: ${resolve_default:KinovaPickAndHoverPPO,${....experiment}}
+    max_epochs: ${resolve_default:500,${....max_iterations}}
+    save_best_after: 50
+    save_frequency: 100

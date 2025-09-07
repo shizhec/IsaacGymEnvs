@@ -37,7 +37,7 @@ import numpy as np
 from pysdf import SDF
 import torch
 import trimesh
-from urdfpy import URDF
+from urchin import URDF
 import warp as wp
 
 

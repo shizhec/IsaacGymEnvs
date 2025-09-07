@@ -55,6 +55,14 @@ from .allegro_kuka.allegro_kuka_two_arms_reorientation import AllegroKukaTwoArms
 
 from .industreal.industreal_task_pegs_insert import IndustRealTaskPegsInsert
 from .industreal.industreal_task_gears_insert import IndustRealTaskGearsInsert
+from .kinova_reaching import KinovaReaching
+from .kinova_reaching_obstacles import KinovaReachingObstacles
+from .kinova_reaching_obstacles2 import KinovaReachingObstacles2
+from .kinova_fetch import KinovaFetch
+from .kinova_grasp_and_lift import KinovaGraspAndLift
+from .kinova_pickup import KinovaPickup
+from .kinova_pickup_single import KinovaPickupSingle
+from .kinova_insertion import KinovaInsertion
 
 
 def resolve_allegro_kuka(cfg, *args, **kwargs):
@@ -111,4 +119,16 @@ isaacgym_task_map = {
     "Quadcopter": Quadcopter,
     "ShadowHand": ShadowHand,
     "Trifinger": Trifinger,
+    "KinovaReaching": KinovaReaching,
+    "KinovaReachingObstacles": KinovaReachingObstacles,
+    "KinovaReachingObstacles2": KinovaReachingObstacles2,
+    "KinovaFetch": KinovaFetch,
+    "KinovaPickAndHover": KinovaFetch,
+    "KinovaPickAndReach": KinovaFetch,
+    "KinovaPickAndPlace": KinovaFetch,
+    "KinovaPush": KinovaFetch,
+    "KinovaGraspAndLift": KinovaGraspAndLift,
+    "KinovaPickup": KinovaPickup,
+    "KinovaPickupSingle": KinovaPickupSingle,
+    "KinovaInsertion": KinovaInsertion,
 }

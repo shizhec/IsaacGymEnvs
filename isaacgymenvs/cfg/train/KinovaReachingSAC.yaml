@@ -1,0 +1,49 @@
+params:  
+
+  seed: ${...seed}
+
+  algo:
+    name: sac
+
+  model:
+    name: soft_actor_critic
+
+  network:
+    name: soft_actor_critic
+    separate: True
+    space:
+      continuous:
+    mlp:
+      units: [256, 128, 64]
+      activation: elu
+      
+      initializer:
+        name: default
+    log_std_bounds: [-5, 2]
+
+  load_checkpoint: False
+  load_path: nn/KinovaReaching.pth
+
+  config:
+    name: ${resolve_default:KinovaReachingSAC,${....experiment}}
+    env_name: rlgpu
+    multi_gpu: ${....multi_gpu}
+    normalize_input: True
+    reward_shaper:
+      scale_value: 1.0
+    max_epochs: 10000
+    num_steps_per_episode: 32
+    save_best_after: 100
+    save_frequency: 200
+    gamma: 0.99
+    init_alpha: 1.0
+    alpha_lr: 0.005
+    actor_lr: 0.0005
+    critic_lr: 0.0005
+    critic_tau: 0.005
+    batch_size: 128
+    learnable_temperature: true
+    num_seed_steps: 5
+    num_warmup_steps: 10
+    replay_buffer_size: 100000
+    num_actors: ${....task.env.numEnvs}
