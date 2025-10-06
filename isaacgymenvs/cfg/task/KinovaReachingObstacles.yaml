@@ -5,6 +5,8 @@ physics_engine: ${..physics_engine}
 
 debug_vis: False
 
+test: ${..test}
+
 # if given, will override the device setting in gym. 
 env:
   numEnvs: ${resolve_default:4096,${...num_envs}}
