@@ -26,22 +26,22 @@ class KinovaFetch(VecTask):
             print("================Initializing Pick and Hover Task================")
             self.compute_reward_fn = compute_pick_and_hover_reward
             self.compute_obs_fn = compute_pick_and_hover_obs
-            self.cfg["env"]["numObservations"] = 28  # pos(6) + vel(6) + eef_pos(3) + obj(10) + gripper(3)
+            self.cfg["env"]["numObservations"] = 31  # pos(9) + vel(9) + eef_pos(3) + obj(10)
         elif self.sub_task == "pick_and_reach":
             print("================Initializing Pick and Reach Task================")
             self.compute_reward_fn = compute_pick_and_reach_reward
             self.compute_obs_fn = compute_pick_and_reach_obs
-            self.cfg["env"]["numObservations"] = 31  # pos(6) + vel(6) + eef_pos(3) + obj(10) + gripper(3) + target(3)
+            self.cfg["env"]["numObservations"] = 34  # pos(9) + vel(9) + eef_pos(3) + obj(10) + target(3)
         elif self.sub_task == "pick_and_place":
             print("================Initializing Pick and Place Task================")
             self.compute_reward_fn = compute_pick_and_place_reward
             self.compute_obs_fn = compute_pick_and_place_obs
-            self.cfg["env"]["numObservations"] = 31  # pos(6) + vel(6) + eef_pos(3) + obj(10) + gripper(3) + target(3)
+            self.cfg["env"]["numObservations"] = 34  # pos(9) + vel(9) + eef_pos(3) + obj(10) + target(3)
         elif self.sub_task == "push":
             print("================Initializing Push Task================")
             self.compute_reward_fn = compute_push_reward
             self.compute_obs_fn = compute_push_obs
-            self.cfg["env"]["numObservations"] = 31  # pos(6) + vel(6) + eef_pos(3) + obj(10) + gripper(3) + target(3)
+            self.cfg["env"]["numObservations"] = 34  # pos(9) + vel(9) + eef_pos(3) + obj(10) + target(3)
 
         # actions include: 'joint_pos': {joint_vel (6) + joint_pos (3)}
         self.cfg["env"]["numActions"] = 9
@@ -520,6 +520,8 @@ class KinovaFetch(VecTask):
             # Kinova
             "pos": self._pos[:, :],                    # 6 arm joints + 3 gripper joints
             "vel": self._vel[:, :],
+            "arm_pos": self._pos[:, :self.n_dofs_arm],
+            "arm_vel": self._vel[:, :self.n_dofs_arm],
             "gripper_pos": self._pos[:, self.n_dofs_arm:],
             "eef_pos": self._eef_state[:, :3],
             "eef_quat": self._eef_state[:, 3:7],
@@ -768,83 +770,83 @@ class KinovaFetch(VecTask):
 
 def compute_pick_and_hover_obs():
     """
-    Observation for HybridDynamicsModel:
-    - Robot state: [pos, vel] (12) - used by analytical kinematic model
+    Observation for HybridDynamicsModel with gripper URDF (j2n6s300_gripper_clean.urdf):
+    - Robot state: [pos, vel] (18) - 9 DOFs (6 arm + 3 gripper)
     - eef_pos: (3) - recomputed by kinematics, kept for consistency
-    - Scene dynamic: object state + gripper (13)
-    Total: 6 + 6 + 3 + 13 = 28 dims
+    - Scene dynamic: object state (10)
+    Total: 9 + 9 + 3 + 10 = 31 dims
+    Note: gripper_pos removed (already in pos[6:9])
     """
     return [
-        "pos",                # (6) Arm joint positions - for analytical model
-        "vel",                # (6) Arm joint velocities - for analytical model
+        "pos",                # (9) All joint positions: 6 arm + 3 gripper - for analytical model
+        "vel",                # (9) All joint velocities: 6 arm + 3 gripper
         "eef_pos",            # (3) End effector position - recomputed by kinematics
         # Scene dynamic (learned residuals):
         "obj_pos",            # (3) Object position
         "obj_lin_vel",        # (3) Object linear velocity
         "obj_quat",           # (4) Object orientation
-        "gripper_pos",        # (3) Gripper joint positions
     ]
 
 
 def compute_pick_and_reach_obs():
     """
-    Observation for HybridDynamicsModel:
-    - Robot state: [pos, vel] (12) - used by analytical kinematic model
+    Observation for HybridDynamicsModel with gripper URDF (j2n6s300_gripper_clean.urdf):
+    - Robot state: [pos, vel] (18) - 9 DOFs (6 arm + 3 gripper)
     - eef_pos: (3) - recomputed by kinematics, kept for consistency
-    - Scene dynamic: object state + gripper + target (16)
-    Total: 6 + 6 + 3 + 16 = 31 dims
+    - Scene dynamic: object state + target (13)
+    Total: 9 + 9 + 3 + 13 = 34 dims
+    Note: gripper_pos removed (already in pos[6:9])
     """
     return [
-        "pos",                # (6) Arm joint positions - for analytical model
-        "vel",                # (6) Arm joint velocities - for analytical model
+        "pos",                # (9) All joint positions: 6 arm + 3 gripper - for analytical model
+        "vel",                # (9) All joint velocities: 6 arm + 3 gripper
         "eef_pos",            # (3) End effector position - recomputed by kinematics
         # Scene dynamic (learned residuals):
         "obj_pos",            # (3) Object position
         "obj_lin_vel",        # (3) Object linear velocity
         "obj_quat",           # (4) Object orientation
-        "gripper_pos",        # (3) Gripper joint positions
         "target_pos",         # (3) Target position - static, learns ~0 residual
     ]
 
 
 def compute_pick_and_place_obs():
     """
-    Observation for HybridDynamicsModel:
-    - Robot state: [pos, vel] (12) - used by analytical kinematic model
+    Observation for HybridDynamicsModel with gripper URDF (j2n6s300_gripper_clean.urdf):
+    - Robot state: [pos, vel] (18) - 9 DOFs (6 arm + 3 gripper)
     - eef_pos: (3) - recomputed by kinematics, kept for consistency
-    - Scene dynamic: object state + gripper + target (16)
-    Total: 6 + 6 + 3 + 16 = 31 dims
+    - Scene dynamic: object state + target (13)
+    Total: 9 + 9 + 3 + 13 = 34 dims
+    Note: gripper_pos removed (already in pos[6:9])
     """
     return [
-        "pos",                # (6) Arm joint positions - for analytical model
-        "vel",                # (6) Arm joint velocities - for analytical model
+        "pos",                # (9) All joint positions: 6 arm + 3 gripper - for analytical model
+        "vel",                # (9) All joint velocities: 6 arm + 3 gripper
         "eef_pos",            # (3) End effector position - recomputed by kinematics
         # Scene dynamic (learned residuals):
         "obj_pos",            # (3) Object position
         "obj_lin_vel",        # (3) Object linear velocity
         "obj_quat",           # (4) Object orientation
-        "gripper_pos",        # (3) Gripper joint positions
         "target_pos",         # (3) Target position - static, learns ~0 residual
     ]
 
 
 def compute_push_obs():
     """
-    Observation for HybridDynamicsModel:
-    - Robot state: [pos, vel] (12) - used by analytical kinematic model
+    Observation for HybridDynamicsModel with gripper URDF (j2n6s300_gripper_clean.urdf):
+    - Robot state: [pos, vel] (18) - 9 DOFs (6 arm + 3 gripper)
     - eef_pos: (3) - recomputed by kinematics, kept for consistency
-    - Scene dynamic: object state + gripper + target (16)
-    Total: 6 + 6 + 3 + 16 = 31 dims
+    - Scene dynamic: object state + target (13)
+    Total: 9 + 9 + 3 + 13 = 34 dims
+    Note: gripper_pos removed (already in pos[6:9])
     """
     return [
-        "pos",                # (6) Arm joint positions - for analytical model
-        "vel",                # (6) Arm joint velocities - for analytical model
+        "pos",                # (9) All joint positions: 6 arm + 3 gripper - for analytical model
+        "vel",                # (9) All joint velocities: 6 arm + 3 gripper
         "eef_pos",            # (3) End effector position - recomputed by kinematics
         # Scene dynamic (learned residuals):
         "obj_pos",            # (3) Object position
         "obj_lin_vel",        # (3) Object linear velocity
         "obj_quat",           # (4) Object orientation
-        "gripper_pos",        # (3) Gripper joint positions
         "target_pos",         # (3) Target position - static, learns ~0 residual
     ]
 
