@@ -25,17 +25,18 @@ class KinovaReaching(VecTask):
             "dist_scale": cfg["env"]["distRewardScale"],
         }
 
-        # dimensions
-        # obs include: 'joint_pos': {dof_pos (6) + dof_vel(6) + eef_pos(3) + target_pos(3)}
-        # actions include: 'joint_pos': {joint_vel (6)}
-        self.cfg["env"]["numObservations"] = 18
-        self.cfg["env"]["numActions"] = 6
-        
         # Values to be filled in at runtime
         self.states = {}                        # states used for reward calculation
         self.handles = {}                       # handles of kinova and cube
         self.actions = None                     # Current actions to be deployed
-        self.n_dofs = None                      # number of dofs per env
+        self.n_dofs = None                      # number of dofs per env (will be set after loading URDF)
+
+        # dimensions - will be set dynamically after loading URDF in create_sim
+        # obs include: 'joint_pos': {dof_pos (n_dofs) + dof_vel(n_dofs) + eef_pos(3) + target_pos(3)}
+        # actions include: 'joint_pos': {joint_vel (n_dofs)}
+        # These are temporarily set and will be updated in _create_envs
+        self.cfg["env"]["numObservations"] = 18  # Default for 6-DOF, updated dynamically
+        self.cfg["env"]["numActions"] = 6        # Default for 6-DOF, updated dynamically
 
         # Tensor placeholders
         self._root_tensor = None                # State of root body            (n_envs, 13) [3 position floats, 4 quaternion floats(orientation), 3 linear velocity floats, 3 angular veloctity floats]
@@ -140,6 +141,13 @@ class KinovaReaching(VecTask):
         self.kinova_asset = self.gym.load_asset(self.sim, asset_root, asset_file, kinova_asset_options)
 
         kinova_dof_props = self._config_kinova_dofs_props()
+
+        # Update observation and action dimensions based on actual DOF count
+        # obs = [dof_pos(n_dofs), dof_vel(n_dofs), eef_pos(3), target_pos(3)]
+        self.cfg["env"]["numObservations"] = 2 * self.n_dofs + 6
+        self.cfg["env"]["numActions"] = self.n_dofs
+        print(f"Updated numObservations to {self.cfg['env']['numObservations']} (for {self.n_dofs} DOFs)")
+        print(f"Updated numActions to {self.cfg['env']['numActions']}")
 
         kinova_pose = gymapi.Transform()
         kinova_pose.p = gymapi.Vec3(0.0, 0.0, table_thickness)
