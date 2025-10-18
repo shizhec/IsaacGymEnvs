@@ -18,6 +18,8 @@ class KinovaReaching(VecTask):
         self.debug_vis = cfg["debug_vis"]
 
         # args
+        self.test = getattr(cfg, 'test', False)
+        self.random_reset = getattr(cfg, 'random_reset', True)
         self.max_episode_length = cfg["env"]["episodeLength"]
         self.kinova_dof_noise = self.cfg["env"]["kinovaDofNoise"]
         self.dof_vel_scale = self.cfg["env"]["dofVelocityScale"]
@@ -51,13 +53,30 @@ class KinovaReaching(VecTask):
         super().__init__(config=cfg, rl_device=rl_device, sim_device=sim_device, graphics_device_id=graphics_device_id, 
                          headless=headless, virtual_screen_capture=virtual_screen_capture, force_render=force_render)
         
+
+        # Success tracking parameters
+        self.success_threshold = 0.05  # Distance threshold for success (2cm)
+        self.success_duration = 20     # Stay at target for 30 steps
+        self.success_counter = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
+        self.success_flag = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
+        
         self._config_camera()
 
         # Reset all environments
         self.reset_all()
 
-        # Refresh State
-        self._refresh()
+        init_steps_to_skip = 1 # some small number of steps
+
+	  # do the below for the first time before any compute observation/reward
+        for i in range(init_steps_to_skip):
+            print(f"Skipping steps ....{i} to allow the environment settled..")
+            if self.force_render:
+                self.render()
+            self.gym.simulate(self.sim)
+            self._refresh()
+
+        # Compute Initial Observations
+        self.compute_observations()
 
 
     def create_sim(self) -> None:
@@ -99,9 +118,8 @@ class KinovaReaching(VecTask):
         self.kinova_lower_limits_vel = to_torch(-kinova_dof_props['velocity'], device=self.device, dtype=torch.float32)
         self.kinova_upper_limits_vel = to_torch(kinova_dof_props['velocity'], device=self.device, dtype=torch.float32)
 
-        # set default joint_pos to mid_pos
-        self.kinova_mids_pos = 0.5 * (self.kinova_upper_limits_pos + self.kinova_lower_limits_pos)
-        self.default_dof_pos = self.kinova_mids_pos
+        # set default joint_pos to home pose
+        self.default_dof_pos = to_torch([0.000, 3.8082, 4.2944, 2.4488, 1.7400, 0.9989], device=self.device, dtype=torch.float32)
         
         # set dof_props for joint_vel control
         kinova_dof_props["driveMode"][:] = gymapi.DOF_MODE_POS          # control with joint pos, but action is vel
@@ -237,11 +255,15 @@ class KinovaReaching(VecTask):
                                             device=self.device).view(self.num_envs, -1)
 
 
-    def _reset_kinova_position(self, env_ids):
-        reset_noise = torch.rand((len(env_ids), self.n_dofs), device=self.device, dtype=torch.float32)
-        pos = torch.clamp(self.default_dof_pos.unsqueeze(0) +
-                          self.kinova_dof_noise * 2.0 * (reset_noise - 0.5),
-                          self.kinova_lower_limits_pos.unsqueeze(0), self.kinova_upper_limits_pos.unsqueeze(0))
+    def _reset_kinova_dofs(self, env_ids, random=True):
+        if random:
+            reset_noise = torch.rand((len(env_ids), self.n_dofs), device=self.device, dtype=torch.float32)
+            pos = torch.clamp(self.default_dof_pos.unsqueeze(0) +
+                            self.kinova_dof_noise * 2.0 * (reset_noise - 0.5),
+                            self.kinova_lower_limits_pos.unsqueeze(0), self.kinova_upper_limits_pos.unsqueeze(0))
+        else:
+            # When random=False, use default positions without noise
+            pos = self.default_dof_pos.unsqueeze(0).repeat(len(env_ids), 1)
 
         # refresh pos and vel
         self._pos[env_ids, :] = pos
@@ -258,24 +280,32 @@ class KinovaReaching(VecTask):
                                               len(multi_env_ids_int32))
 
 
-    def _reset_target_position(self, env_ids):
+    def _reset_target_position(self, env_ids, random=True):
         self.gym.clear_lines(self.viewer)
         num_resets = len(env_ids)
 
-        # random sample angle between -pi/2 and pi/2
-        theta = torch.pi * torch.rand(num_resets, 1, device=self.device, dtype=torch.float32) - (torch.pi / 2)
+        if random:
+            # random sample angle
+            theta = (torch.rand(num_resets, 1, device=self.device, dtype=torch.float32) - 0.5) * torch.pi / 3
 
-        # random sample radius within a range(min_rad, max_rad)
-        radius = torch.rand(num_resets, 1, device=self.device, dtype=torch.float32) * (0.9 - 0.2) + 0.2
-        
-        # get x and y
-        x = radius * torch.cos(theta)
-        y = radius * torch.sin(theta)
+            # random sample radius within a range(min_rad, max_rad)
+            radius = torch.rand(num_resets, 1, device=self.device, dtype=torch.float32) * (0.8 - 0.5) + 0.5
 
-        # sample random z
-        z = torch.rand(num_resets, 1, device=self.device, dtype=torch.float32) * 0.8 + 0.2
+            # get x and y
+            x = radius * torch.cos(theta)
+            y = radius * torch.sin(theta)
 
-        sampled_target_pos = torch.cat([x, y, z], dim=-1)
+            # sample random z
+            z = torch.rand(num_resets, 1, device=self.device, dtype=torch.float32) * 0.4 + 0.4
+
+            sampled_target_pos = torch.cat([x, y, z], dim=-1)
+        else:
+            theta = torch.tensor([0.25], device=self.device, dtype=torch.float32).repeat(num_resets, 1)
+            radius = torch.tensor([0.6], device=self.device, dtype=torch.float32).repeat(num_resets, 1)
+            x = radius * torch.cos(theta)
+            y = radius * torch.sin(theta)
+            z = torch.tensor([0.6], device=self.device, dtype=torch.float32).repeat(num_resets, 1)
+            sampled_target_pos = torch.cat([x, y, z], dim=-1)
         
         # update sample target pos
         self.target_pos[env_ids, :] = sampled_target_pos
@@ -294,7 +324,6 @@ class KinovaReaching(VecTask):
 
     def reset_all(self):
         self.reset_idx(torch.arange(self.num_envs, device=self.device))
-        self.compute_observations()
 
 
     def reset_idx(self, env_ids):
@@ -303,10 +332,19 @@ class KinovaReaching(VecTask):
             env_ids = torch.arange(start=0, end=self.num_envs, device=self.device, dtype=torch.long)
 
         # reset kinova dofs pos and vel
-        self._reset_kinova_position(env_ids)       
-
+        self._reset_kinova_dofs(env_ids, random=self.random_reset)
+        
         # reset target position
-        self._reset_target_position(env_ids)
+        self._reset_target_position(env_ids, random=self.random_reset)
+
+        if self.test:
+            # Calculate success rate as the ratio of successful environments to total environments
+            success_rate = torch.sum(self.success_flag).item() / self.num_envs
+            print(f"Success rate: {success_rate:.2f}")
+
+            # Reset success tracking for these environments
+            self.success_counter[env_ids] = 0
+            self.success_flag[env_ids] = False
 
         self.progress_buf[env_ids] = 0
         self.reset_buf[env_ids] = 0
@@ -382,11 +420,32 @@ class KinovaReaching(VecTask):
 
     def get_state_dim(self):
         return self.n_dofs * 2
+    
+
+    def check_success(self):
+        """
+        Check if the end-effector has reached the target position and remained there for sufficient time.
+        """
+        # Calculate distance from end-effector to target
+        dist_to_target = torch.norm(self.states['eef_pos_to_target'], dim=-1)
+        
+        # Check which environments have the end-effector close enough to the target
+        at_target = dist_to_target < self.success_threshold
+        
+        # Increment counters for environments where arm is at target
+        self.success_counter = torch.where(at_target, self.success_counter + 1, torch.zeros_like(self.success_counter))
+        
+        # Set success flag for environments where counter exceeds success duration
+        self.success_flag = self.success_flag | self.success_counter >= self.success_duration                           
 
 
     def post_physics_step(self):
         """Compute reward and observations, reset any environments that require it."""
         self.progress_buf += 1
+
+        # Check for success
+        if self.test:
+            self.check_success()
 
         env_ids = self.reset_buf.nonzero(as_tuple=False).squeeze(-1)
         if len(env_ids) > 0:
