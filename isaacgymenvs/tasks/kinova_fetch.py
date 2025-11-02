@@ -54,6 +54,7 @@ class KinovaFetch(VecTask):
             "grasp_scale": 1.0,          # Increased to emphasize grasping
             "obj_dist_scale": 2.0,       # Higher to prioritize moving object to target
             "lift_scale": 5.0,           # Significant bonus for success
+            "hit_on_target_scale": 5.0,  # Bonus for hitting target
             "place_threshold": 0.05,     # Distance threshold for being at target
             "grasp_threshold": 0.03,     # Distance threshold for being able to grasp
             "action_scale": 0.1          # Small penalty for excessive movement
@@ -351,22 +352,52 @@ class KinovaFetch(VecTask):
     def sample_uniform_tensor(self, n, low, high) -> torch.Tensor:
         """
         Sample n values uniformly from [low, high) as a PyTorch tensor
-        
+
         Args:
             n (int): Number of samples to generate
             low (float): Lower bound (inclusive)
             high (float): Upper bound (exclusive)
-        
+
         Returns:
             torch.Tensor: Tensor of shape (n,) with uniformly sampled values
         """
         # Generate uniform samples between 0 and 1
         samples = torch.rand(n, device=self.device, dtype=torch.float32)
-        
+
         # Scale and shift to desired range
         samples = samples * (high - low) + low
-        
+
         return samples
+
+
+    def sample_polar_positions(self, n, center_x, center_y, radius_min, radius_max) -> torch.Tensor:
+        """
+        Sample n positions using polar coordinates around a center point
+
+        Args:
+            n (int): Number of samples to generate
+            center_x (float): X coordinate of the center point
+            center_y (float): Y coordinate of the center point
+            radius_min (float): Minimum radius from center
+            radius_max (float): Maximum radius from center
+
+        Returns:
+            torch.Tensor: Tensor of shape (n, 2) with (x, y) coordinates
+        """
+        # Sample angles uniformly from [0, 2*pi)
+        angles = torch.rand(n, device=self.device, dtype=torch.float32) * 2 * math.pi
+
+        # Sample radii uniformly from [radius_min, radius_max)
+        radii = self.sample_uniform_tensor(n, radius_min, radius_max)
+
+        # Convert polar to Cartesian coordinates
+        x = center_x + radii * torch.cos(angles)
+        y = center_y + radii * torch.sin(angles)
+
+        # Stack into (n, 2) tensor
+        positions = torch.stack([x, y], dim=-1)
+
+        return positions
 
 
     def _reset_object_position(self, env_ids, random=True):
@@ -375,8 +406,8 @@ class KinovaFetch(VecTask):
 
         if random:
             # random sample x, y, z
-            x = self.sample_uniform_tensor(num_resets, 0.45, 0.55).unsqueeze(1)
-            y = self.sample_uniform_tensor(num_resets, -0.1, 0.1).unsqueeze(1)
+            x = self.sample_uniform_tensor(num_resets, 0.475, 0.525).unsqueeze(1)
+            y = self.sample_uniform_tensor(num_resets, -0.05, 0.05).unsqueeze(1)
             z = to_torch([self.default_cube_height], device=self.device, dtype=torch.float32).repeat(num_resets, 1)
             
             sampled_obj_pos = torch.cat([x, y, z], dim=-1)
@@ -410,17 +441,18 @@ class KinovaFetch(VecTask):
             z = to_torch([0.0], device=self.device, dtype=torch.float32).repeat(num_resets, 1)
         elif self.sub_task == "pick_and_reach":
             if random:
-                x = self.sample_uniform_tensor(num_resets, 0.4, 0.6).unsqueeze(1)
-                y = self.sample_uniform_tensor(num_resets, -0.15, 0.15).unsqueeze(1)
-                z = self.sample_uniform_tensor(num_resets, self.default_cube_height + 0.25, self.default_cube_height + 0.35).unsqueeze(1)
+                x = self.sample_uniform_tensor(num_resets, 0.45, 0.55).unsqueeze(1)
+                y = self.sample_uniform_tensor(num_resets, -0.10, 0.10).unsqueeze(1)
+                z = self.sample_uniform_tensor(num_resets, self.default_cube_height + 0.30, self.default_cube_height + 0.35).unsqueeze(1)
             else:
-                x = to_torch([0.55], device=self.device, dtype=torch.float32).repeat(num_resets, 1)
+                x = to_torch([0.5], device=self.device, dtype=torch.float32).repeat(num_resets, 1)
                 y = to_torch([-0.05], device=self.device, dtype=torch.float32).repeat(num_resets, 1)
                 z = to_torch([self.default_cube_height + 0.3], device=self.device, dtype=torch.float32).repeat(num_resets, 1)
         elif self.sub_task in ["pick_and_place", "push"]:
             if random:
-                x = self.sample_uniform_tensor(num_resets, 0.4, 0.6).unsqueeze(1)
-                y = self.sample_uniform_tensor(num_resets, -0.15, 0.15).unsqueeze(1)
+                x_y = self.sample_polar_positions(num_resets, center_x=0.5, center_y=0.0, radius_min=0.10, radius_max=0.15)
+                x = x_y[:, 0].unsqueeze(1)
+                y = x_y[:, 1].unsqueeze(1)
                 z = to_torch([self.default_cube_height], device=self.device, dtype=torch.float32).repeat(num_resets, 1)
             else:
                 x = to_torch([0.55], device=self.device, dtype=torch.float32).repeat(num_resets, 1)
@@ -1098,33 +1130,56 @@ def compute_pick_and_place_reward(reset_buf, progress_buf, states, reward_settin
 @torch.jit.script
 def compute_push_reward(reset_buf, progress_buf, states, reward_settings, max_episode_length):
     # type: (Tensor, Tensor, Dict[str, Tensor], Dict[str, float], float) -> Tuple[Tensor, Tensor]
+    """Push reward that uses planar distances and velocity progress for smoother shaping."""
 
     reward = torch.zeros_like(progress_buf, dtype=torch.float32)
 
-    # Get key distances and states
-    dist_hand_obj = torch.norm(states["eef_to_obj_pos"], dim=-1)
-    dist_obj_target = torch.norm(states["obj_to_target_pos"], dim=-1)
-    
-    # Give reaching reward first
-    reaching_reward = 0.1 * (1.0 - torch.tanh(15.0 * dist_hand_obj))
-    
-    close_to_obj = dist_hand_obj < 0.04
-    # Give stronger reward for pushing object closer to target
+    eef_to_obj = states["eef_to_obj_pos"]
+    obj_to_target = states["obj_to_target_pos"]
+    obj_lin_vel = states["obj_lin_vel"]
+
+    # Use planar distances for reaching/pushing to avoid penalizing safe hover height.
+    dist_hand_obj_xy = torch.norm(eef_to_obj[:, :2], dim=-1)
+    dist_obj_target_xy = torch.norm(obj_to_target[:, :2], dim=-1)
+    vertical_offset = torch.abs(eef_to_obj[:, 2])
+
+    # Smooth reaching reward following existing scaling convention.
+    reaching_reward = reward_settings["eef_dist_scale"] * (1.0 - torch.tanh(5.0 * dist_hand_obj_xy))
+
+    close_xy = dist_hand_obj_xy < 0.06
+    near_surface = vertical_offset < 0.10
+    contact_window = close_xy & near_surface
+
+    # Stronger reward once we are in a good pushing pose.
     pushing_reward = torch.where(
-        close_to_obj,
-        5.0 * (1.0 - torch.tanh(15.0 * dist_obj_target)),  # Double the scale for stronger signal
+        contact_window,
+        reward_settings["obj_dist_scale"] * (1.0 - torch.tanh(3.0 * dist_obj_target_xy)),
         torch.zeros_like(reward)
     )
-    
-    # Success bonus when very close to target
+
+    # Reward moving the object toward the target when in contact.
+    obj_velocity_xy = obj_lin_vel[:, :2]
+    progress_velocity = -torch.sum(obj_to_target[:, :2] * obj_velocity_xy, dim=-1) / (torch.norm(obj_to_target[:, :2], dim=-1) + 1e-6)
+    velocity_reward = torch.where(
+        contact_window,
+        0.1 * torch.clamp(progress_velocity, min=0.0),
+        torch.zeros_like(reward)
+    )
+
+    # Keep the end-effector close to table height when near the cube.
+    height_penalty = torch.where(
+        contact_window,
+        0.05 * torch.clamp(vertical_offset - 0.03, min=0.0),
+        torch.zeros_like(reward)
+    )
+
     success_bonus = torch.where(
-        dist_obj_target < 0.02,
-        15.0 * torch.ones_like(reward),  # Increased success bonus
+        dist_obj_target_xy < reward_settings["place_threshold"],
+        reward_settings["hit_on_target_scale"] * torch.ones_like(reward),
         torch.zeros_like(reward)
     )
-    
-    # Combine rewards
-    reward = reaching_reward + pushing_reward + success_bonus
+
+    reward = reaching_reward + pushing_reward + velocity_reward + success_bonus - height_penalty
 
     # Reset only when max episode length is reached
     reset_buf = torch.where(progress_buf >= max_episode_length - 1,
