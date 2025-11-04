@@ -93,8 +93,11 @@ class KinovaFetch(VecTask):
         self.success_counter_target = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
         self.success_flag_target = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
         
-        
+
         self._config_camera()
+
+        # Set observation space bounds for model training stability
+        self._setup_observation_space()
 
         # Reset all environments
         self.reset_all()
@@ -133,7 +136,88 @@ class KinovaFetch(VecTask):
         cam_pos = gymapi.Vec3(-1, 0, 2)
         cam_target = gymapi.Vec3(1, 0, -0.5)
         self.gym.viewer_camera_look_at(self.viewer, None, cam_pos, cam_target)
-    
+
+    def _setup_observation_space(self) -> None:
+        """Setup observation space bounds for model training stability.
+
+        Uses actual Kinova joint limits from URDF and reasonable workspace bounds.
+        This prevents gradient explosion in hybrid dynamics models.
+        """
+        from gym import spaces
+
+        # Joint limits from Kinova URDF (already loaded in _config_kinova_dofs_props)
+        joint_pos_low = self.kinova_lower_limits_pos.cpu().numpy().copy()
+        joint_pos_high = self.kinova_upper_limits_pos.cpu().numpy().copy()
+        joint_vel_low = self.kinova_lower_limits_vel.cpu().numpy().copy()
+        joint_vel_high = self.kinova_upper_limits_vel.cpu().numpy().copy()
+
+        # Threshold for detecting very large values (not technically inf but unreasonable)
+        LARGE_VALUE_THRESHOLD = 1e10
+
+        # Replace inf/very large values with reasonable bounds
+        # Arm joints (first 6): use ±2π for revolute joints where limits are unreasonable
+        for i in range(6):
+            if abs(joint_pos_low[i]) > LARGE_VALUE_THRESHOLD or np.isinf(joint_pos_low[i]):
+                joint_pos_low[i] = -2 * np.pi
+            if abs(joint_pos_high[i]) > LARGE_VALUE_THRESHOLD or np.isinf(joint_pos_high[i]):
+                joint_pos_high[i] = 2 * np.pi
+
+        # Gripper joints (last 3): ensure reasonable bounds
+        for i in range(6, 9):
+            if abs(joint_pos_low[i]) > LARGE_VALUE_THRESHOLD or np.isinf(joint_pos_low[i]):
+                joint_pos_low[i] = 0.0
+            if abs(joint_pos_high[i]) > LARGE_VALUE_THRESHOLD or np.isinf(joint_pos_high[i]):
+                joint_pos_high[i] = 1.5
+
+        # Velocity bounds: replace unreasonable values with ±10.0
+        for i in range(9):
+            if abs(joint_vel_low[i]) > LARGE_VALUE_THRESHOLD or np.isinf(joint_vel_low[i]):
+                joint_vel_low[i] = -10.0
+            if abs(joint_vel_high[i]) > LARGE_VALUE_THRESHOLD or np.isinf(joint_vel_high[i]):
+                joint_vel_high[i] = 10.0
+
+        # Workspace bounds (reasonable estimates for Kinova workspace)
+        eef_pos_low = np.array([-2.0, -2.0, 0.0])
+        eef_pos_high = np.array([2.0, 2.0, 2.0])
+        obj_pos_low = np.array([-2.0, -2.0, 0.0])
+        obj_pos_high = np.array([2.0, 2.0, 2.0])
+        target_pos_low = np.array([-2.0, -2.0, 0.0])
+        target_pos_high = np.array([2.0, 2.0, 2.0])
+
+        # Object dynamics bounds
+        obj_vel_low = np.array([-5.0, -5.0, -5.0])
+        obj_vel_high = np.array([5.0, 5.0, 5.0])
+        obj_quat_low = np.array([-1.0, -1.0, -1.0, -1.0])
+        obj_quat_high = np.array([1.0, 1.0, 1.0, 1.0])
+
+        # Combine based on observation structure
+        if self.num_obs == 34:  # push, pick_and_reach, pick_and_place
+            obs_low = np.concatenate([
+                joint_pos_low, joint_vel_low, eef_pos_low,
+                obj_pos_low, obj_vel_low, obj_quat_low, target_pos_low
+            ])
+            obs_high = np.concatenate([
+                joint_pos_high, joint_vel_high, eef_pos_high,
+                obj_pos_high, obj_vel_high, obj_quat_high, target_pos_high
+            ])
+        elif self.num_obs == 31:  # pick_and_hover
+            obs_low = np.concatenate([
+                joint_pos_low, joint_vel_low, eef_pos_low,
+                obj_pos_low, obj_vel_low, obj_quat_low
+            ])
+            obs_high = np.concatenate([
+                joint_pos_high, joint_vel_high, eef_pos_high,
+                obj_pos_high, obj_vel_high, obj_quat_high
+            ])
+        else:
+            # Fallback: use inf bounds
+            print(f"[KinovaFetch] Warning: Unknown observation size {self.num_obs}, using inf bounds")
+            obs_low = np.ones(self.num_obs) * -np.Inf
+            obs_high = np.ones(self.num_obs) * np.Inf
+
+        # Override the default observation space
+        self.obs_space = spaces.Box(low=obs_low, high=obs_high, dtype=np.float32)
+        print(f"[KinovaFetch] Set observation space bounds using Kinova joint limits: shape={obs_low.shape}")
 
     def _create_ground_plane(self) -> None:
         # add ground plane
@@ -1129,6 +1213,46 @@ def compute_pick_and_place_reward(reset_buf, progress_buf, states, reward_settin
 
 @torch.jit.script
 def compute_push_reward(reset_buf, progress_buf, states, reward_settings, max_episode_length):
+    # type: (Tensor, Tensor, Dict[str, Tensor], Dict[str, float], float) -> Tuple[Tensor, Tensor]
+
+    reward = torch.zeros_like(progress_buf, dtype=torch.float32)
+
+    # Get key distances and states
+    dist_hand_obj = torch.norm(states["eef_to_obj_pos"], dim=-1)
+    dist_obj_target = torch.norm(states["obj_to_target_pos"], dim=-1)
+    
+    # Give reaching reward first
+    reaching_reward = 0.5 * (1.0 - torch.tanh(10.0 * dist_hand_obj))
+    
+    close_to_obj = dist_hand_obj < 0.1
+    # Give stronger reward for pushing object closer to target
+
+    pushing_reward = torch.where(
+        close_to_obj,
+        0.5 * (1.0 - torch.tanh(10.0 * dist_obj_target)),  # Double the scale for stronger signal
+        torch.zeros_like(reward)
+    )
+    
+    # Success bonus when very close to target
+    success_bonus = torch.where(
+        dist_obj_target < 0.02,
+        1.0 * torch.ones_like(reward),  # Increased success bonus
+        torch.zeros_like(reward)
+    )
+    
+    # Combine rewards
+    reward = reaching_reward + pushing_reward + success_bonus
+
+    # Reset only when max episode length is reached
+    reset_buf = torch.where(progress_buf >= max_episode_length - 1,
+                           torch.ones_like(reset_buf),
+                           reset_buf)
+
+    return reward, reset_buf
+
+
+@torch.jit.script
+def compute_push_reward_codex(reset_buf, progress_buf, states, reward_settings, max_episode_length):
     # type: (Tensor, Tensor, Dict[str, Tensor], Dict[str, float], float) -> Tuple[Tensor, Tensor]
     """Push reward that uses planar distances and velocity progress for smoother shaping."""
 
