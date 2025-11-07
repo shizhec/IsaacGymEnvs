@@ -54,7 +54,7 @@ class KinovaReachingObstacles(VecTask):
         
 
         # Success tracking parameters
-        self.success_threshold = 0.05  # Distance threshold for success (2cm)
+        self.success_threshold = 0.07  # Distance threshold for success (2cm)
         self.success_duration = 20     # Stay at target for 30 steps
         self.success_counter = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
         self.success_flag = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)

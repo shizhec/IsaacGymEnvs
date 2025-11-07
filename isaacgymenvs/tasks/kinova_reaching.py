@@ -18,7 +18,7 @@ class KinovaReaching(VecTask):
         self.debug_vis = cfg["debug_vis"]
 
         # args
-        self.test = getattr(cfg, 'test', False)
+        self.test = cfg["test"]
         self.random_reset = getattr(cfg, 'random_reset', True)
         self.max_episode_length = cfg["env"]["episodeLength"]
         self.kinova_dof_noise = self.cfg["env"]["kinovaDofNoise"]
@@ -55,8 +55,8 @@ class KinovaReaching(VecTask):
         
 
         # Success tracking parameters
-        self.success_threshold = 0.05  # Distance threshold for success (2cm)
-        self.success_duration = 20     # Stay at target for 30 steps
+        self.success_threshold = 0.10  # Distance threshold for success (2cm)
+        self.success_duration = 10     # Stay at target for 30 steps
         self.success_counter = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
         self.success_flag = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
         
