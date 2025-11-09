@@ -96,8 +96,8 @@ class KinovaReachingObstacles(VecTask):
 
     def _config_camera(self) -> None:
         # point camera at middle env
-        cam_pos = gymapi.Vec3(-1, 0, 2)
-        cam_target = gymapi.Vec3(1, 0, -0.5)
+        cam_pos = gymapi.Vec3(12.0, 10.5, 3.0)
+        cam_target = gymapi.Vec3(4.5, 2.0, -5.0)
         self.gym.viewer_camera_look_at(self.viewer, None, cam_pos, cam_target)
     
 
